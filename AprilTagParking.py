@@ -33,9 +33,7 @@ CAMERA_INDEX = 0
 TAG_FAMILY = cv2.aruco.DICT_APRILTAG_36h11
 
 # Proportional controller: motor_speed = KP * pixel_error, clamped to +-MAX_SPEED.
-# Negative: on this car, a positive movement_move() speed drives toward positive
-# pixel error instead of away from it, so KP has to be negative to correct it.
-KP = -0.25
+KP = 0.25
 MAX_SPEED = 60
 DEADBAND_PX = 15  # stop once the tag centroid is within this many px of center
 SEND_THRESHOLD = 3  # only send a new BLE command if speed changed by more than this (%)
@@ -44,7 +42,7 @@ SEND_THRESHOLD = 3  # only send a new BLE command if speed changed by more than 
 # P controller with a deadband, so the car overshoots the center and settles
 # back onto it instead of just stopping dead the first time it crosses center.
 SPRING_LOADED = False
-SPRING_K = -0.35  # spring stiffness - how hard the "spring" pulls speed toward the center (sign matches KP)
+SPRING_K = 0.35  # spring stiffness - how hard the "spring" pulls speed toward the center (sign matches KP)
 SPRING_DAMPING = 0.90  # velocity decay per frame - lower = more overshoot/oscillation
 
 
