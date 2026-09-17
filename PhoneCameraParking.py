@@ -45,10 +45,12 @@ CAMERA_INDEX = 1  # iPhone via Continuity Camera - try 0, 1, 2... if this opens 
 TAG_FAMILY = cv2.aruco.DICT_APRILTAG_36h11
 
 # Proportional controller: motor_speed = KP * pixel_error, clamped to +-MAX_SPEED.
-KP = 0.25
-MAX_SPEED = 60
-DEADBAND_PX = 15  # stop once the tag centroid is within this many px of center
-SEND_THRESHOLD = 3  # only send a new BLE command if speed changed by more than this (%)
+# Lower than AprilTagParking.py's defaults: the phone is riding on the car itself
+# here, so driving fast whips the frame around hard and the tag loses tracking.
+KP = 0.12
+MAX_SPEED = 30
+DEADBAND_PX = 20  # stop once the tag centroid is within this many px of center
+SEND_THRESHOLD = 5  # only send a new BLE command if speed changed by more than this (%)
 
 # "Spring loaded" bonus mode: simulate a mass-spring-damper instead of a plain
 # P controller with a deadband, so the car overshoots the center and settles
