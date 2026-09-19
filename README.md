@@ -1,7 +1,6 @@
 # ME193-3: AI in Mobile Robots
 
-My ME193-3 (AI in Mobile Robots) coursework and projects. Each assignment
-lives in its own folder with its own README.
+My ME193-3 (AI in Mobile Robots) coursework and projects.
 
 ## Assignments
 
