@@ -16,10 +16,12 @@ mediapipe model's training and limitations.
 """
 
 import math
+import ssl
 import time
 import urllib.request
 from pathlib import Path
 
+import certifi
 import cv2
 import legoeducation as le
 import mediapipe as mp
@@ -63,7 +65,11 @@ def ensure_model():
     if not MODEL_PATH.exists():
         print("Downloading pose landmarker model (first run only)...")
         MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+        # Use certifi's CA bundle: a python.org install on macOS doesn't use the
+        # system cert store, so the default SSL context fails to verify HTTPS.
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(MODEL_URL, context=ssl_context) as response:
+            MODEL_PATH.write_bytes(response.read())
 
 
 def make_landmarker():
