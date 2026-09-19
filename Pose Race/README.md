@@ -14,11 +14,11 @@ Full write-up (build photos, demo video, reflection): see the
 - Python 3.8+
 - A webcam
 - LEGO Education Double Motor (drivetrain) + a separate Single Motor (propeller)
-- Packages: `opencv-python`, `mediapipe`, `legoeducation`
+- Packages: `opencv-python`, `mediapipe`, `legoeducation`, `certifi`
 
 ```
 pip install --upgrade pip
-pip install opencv-python mediapipe legoeducation
+pip install opencv-python mediapipe legoeducation certifi
 ```
 
 ## Files
