@@ -31,6 +31,8 @@ assume it matches AprilTagParking.py's. If the car drives away from the
 tag instead of toward it, flip the sign of KP (or SPRING_K).
 """
 
+import time
+
 import cv2
 import legoeducation as le
 import numpy as np
@@ -58,6 +60,16 @@ SEND_THRESHOLD = 5  # only send a new BLE command if speed changed by more than 
 SPRING_LOADED = False
 SPRING_K = 0.35  # spring stiffness - how hard the "spring" pulls speed toward the center (sign matches KP)
 SPRING_DAMPING = 0.90  # velocity decay per frame - lower = more overshoot/oscillation
+
+# Search behavior when the tag isn't visible: instead of sitting stopped and
+# hoping the tag drifts back into frame on its own, sweep the car back and
+# forth in place after a short grace period.
+SEARCH_GRACE_S = 0.5  # hold still this long after losing the tag before searching,
+                       # so a single dropped frame doesn't trigger a sweep
+SEARCH_SPEED = 20  # tank-drive speed (%, per side) while sweeping
+SEARCH_SWEEP_S = 1.5  # seconds to sweep one way before reversing, so the car
+                       # searches a bounded arc instead of spinning away from
+                       # where the tag was last seen
 
 
 def try_connect(device, card_color, card_serial, label):
@@ -120,6 +132,8 @@ def main():
 
     last_speed = 0.0
     velocity = 0.0  # only used by the spring controller
+    lost_since = None  # time.time() the tag was first lost, or None while tracked
+    last_search_direction = 0  # 0 = not sweeping, else the +-1 direction last sent
 
     try:
         while True:
@@ -132,14 +146,53 @@ def main():
             centroid, tag_corners = find_tag_centroid(frame, detector)
 
             if centroid is None:
-                # No tag detected: stop rather than guess at a direction.
-                speed = 0.0
-                velocity = 0.0
+                now = time.time()
+                if lost_since is None:
+                    lost_since = now
+                lost_elapsed = now - lost_since
+
+                if lost_elapsed < SEARCH_GRACE_S:
+                    # Might just be a single dropped frame - hold still briefly
+                    # before committing to a search.
+                    speed = 0.0
+                    velocity = 0.0
+                    status_text = "No tag detected - holding"
+                else:
+                    # Sweep back and forth in place instead of sitting stopped,
+                    # since a full stop means the car never re-finds the tag
+                    # unless it happens to drift back into frame on its own.
+                    sweep_elapsed = lost_elapsed - SEARCH_GRACE_S
+                    search_direction = 1 if int(sweep_elapsed // SEARCH_SWEEP_S) % 2 == 0 else -1
+                    speed = 0.0
+                    velocity = 0.0
+                    status_text = f"No tag detected - searching ({'right' if search_direction > 0 else 'left'})"
+
+                    if connected and search_direction != last_search_direction:
+                        # Drive the two sides in opposite directions to rotate in
+                        # place. Only send when the sweep direction actually
+                        # changes - the SEND_THRESHOLD dedup below doesn't apply
+                        # here since it's keyed on straight-line `speed`.
+                        car.movement_move_tank(
+                            speed_left=SEARCH_SPEED * search_direction,
+                            speed_right=-SEARCH_SPEED * search_direction,
+                            blocking=False,
+                        )
+                        last_search_direction = search_direction
+
                 cv2.putText(
-                    frame, "No tag detected - stopped", (10, 30),
+                    frame, status_text, (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2,
                 )
             else:
+                lost_since = None
+                if last_search_direction != 0:
+                    # Coming out of a search sweep - stop the in-place turn
+                    # before handing control back to the straight-line controller.
+                    if connected:
+                        car.motor_stop(motor=le.MOTOR_BOTH)
+                    last_search_direction = 0
+                    last_speed = 0.0
+
                 error_px = centroid[0] - frame_center_x
                 if SPRING_LOADED:
                     speed, velocity = spring_controller(error_px, velocity)
@@ -156,7 +209,7 @@ def main():
 
             cv2.line(frame, (int(frame_center_x), 0), (int(frame_center_x), h), (0, 255, 0), 1)
 
-            if connected and abs(speed - last_speed) > SEND_THRESHOLD:
+            if connected and last_search_direction == 0 and abs(speed - last_speed) > SEND_THRESHOLD:
                 # movement_move() drives both wheels straight forward/backward from a
                 # single signed speed - see AprilTagParking.py for why per-motor
                 # motor_run() calls turn this car instead of driving it straight.
