@@ -57,19 +57,29 @@ SEND_THRESHOLD = 5  # only send a new BLE command if speed changed by more than 
 # "Spring loaded" bonus mode: simulate a mass-spring-damper instead of a plain
 # P controller with a deadband, so the car overshoots the center and settles
 # back onto it instead of just stopping dead the first time it crosses center.
-SPRING_LOADED = False
+SPRING_LOADED = True
 SPRING_K = 0.35  # spring stiffness - how hard the "spring" pulls speed toward the center (sign matches KP)
-SPRING_DAMPING = 0.90  # velocity decay per frame - lower = more overshoot/oscillation
+SPRING_DAMPING = 0.2 # fraction of last frame's velocity kept each frame - closer to 1.0
+                        # means the car keeps coasting through center on momentum (more
+                        # back-and-forth before it settles); lower brings it to rest faster
+SPRING_SETTLE_SPEED = 5  # once inside DEADBAND_PX, treat velocity below this (%) as
+                          # "stopped" and snap to 0 instead of endlessly nudging around center
 
 # Search behavior when the tag isn't visible: instead of sitting stopped and
 # hoping the tag drifts back into frame on its own, sweep the car back and
 # forth in place after a short grace period.
 SEARCH_GRACE_S = 0.5  # hold still this long after losing the tag before searching,
                        # so a single dropped frame doesn't trigger a sweep
-SEARCH_SPEED = 20  # tank-drive speed (%, per side) while sweeping
-SEARCH_SWEEP_S = 1.5  # seconds to sweep one way before reversing, so the car
-                       # searches a bounded arc instead of spinning away from
-                       # where the tag was last seen
+SEARCH_SPEED = 25  # tank-drive speed (%, per side) during each rotation burst -
+                    # can run faster than a continuous spin since the car stops
+                    # completely between bursts for the camera to get a sharp look
+SEARCH_DIRECTION = 1  # spin this way (1 = right, -1 = left), covering a full 360
+                       # instead of oscillating back and forth, since a bounded
+                       # sweep can miss a tag that isn't near where it was last seen
+SEARCH_BURST_S = 0.18  # seconds to rotate before pausing - short enough that a
+                        # blurry mid-turn frame isn't the only chance to spot the tag
+SEARCH_PAUSE_S = 0.22  # seconds to sit fully stopped so the detector gets a sharp,
+                        # non-blurred frame each cycle instead of a moving one
 
 
 def try_connect(device, card_color, card_serial, label):
@@ -84,6 +94,28 @@ def try_connect(device, card_color, card_serial, label):
         print(f"Could not connect to the {label} - not found.")
         return False
     return True
+
+
+def build_detector_params():
+    """ArUco detector params tuned to still decode the tag when it's seen at a
+    steep angle from the car's phone camera, not just head-on. The defaults are
+    tuned for near-frontal views: a tag viewed at an angle projects to a skewed
+    quad with less crisp bit sampling, which the defaults are quick to reject."""
+    params = cv2.aruco.DetectorParameters()
+    # Sample more points per cell when reading bits back out of the corrected
+    # (de-skewed) tag image, so an oblique view still yields a clean read.
+    params.perspectiveRemovePixelPerCell = 8
+    # Tolerate a less-than-perfect quad approximation, since perspective skew
+    # rounds off what should be sharp corners.
+    params.polygonalApproxAccuracyRate = 0.06
+    # Allow more bit errors at the tag border and rely more on the family's
+    # built-in error correction - angled views are noisier along the edge.
+    params.maxErroneousBitsInBorderRate = 0.5
+    params.errorCorrectionRate = 0.8
+    # Sub-pixel corner refinement keeps the centroid (and thus steering) stable
+    # even when the tag's corners are foreshortened instead of square-on.
+    params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+    return params
 
 
 def find_tag_centroid(frame, detector):
@@ -108,6 +140,10 @@ def spring_controller(error_px, velocity):
     the frame center. The spring force pulls it toward center; with light
     damping it overshoots past center before the spring pulls it back, then
     settles - instead of stopping dead the instant it crosses center."""
+    if abs(error_px) < DEADBAND_PX and abs(velocity) < SPRING_SETTLE_SPEED:
+        # Close to center and already slow - call it landed instead of letting
+        # the spring force keep nudging it back and forth forever.
+        return 0.0, 0.0
     force = SPRING_K * error_px
     velocity = float(np.clip(SPRING_DAMPING * velocity + force, -MAX_SPEED, MAX_SPEED))
     return velocity, velocity
@@ -123,7 +159,7 @@ def main():
         )
 
     dictionary = cv2.aruco.getPredefinedDictionary(TAG_FAMILY)
-    detector = cv2.aruco.ArucoDetector(dictionary)
+    detector = cv2.aruco.ArucoDetector(dictionary, build_detector_params())
 
     car = le.DoubleMotor()
     connected = try_connect(car, CARD_COLOR, CARD_SERIAL, "car")
@@ -132,8 +168,11 @@ def main():
 
     last_speed = 0.0
     velocity = 0.0  # only used by the spring controller
+    spring_bounced = False  # whether the spring has already carried it past center once
+    prev_error_sign = 0  # which side of center the tag was on last frame (-1/0/+1)
     lost_since = None  # time.time() the tag was first lost, or None while tracked
-    last_search_direction = 0  # 0 = not sweeping, else the +-1 direction last sent
+    searching = False  # whether the car is currently in the search state
+    last_search_phase = None  # "move" or "pause" - last phase actually sent over BLE
 
     try:
         while True:
@@ -150,6 +189,10 @@ def main():
                 if lost_since is None:
                     lost_since = now
                 lost_elapsed = now - lost_since
+                # Losing the tag means starting a fresh approach once it's found
+                # again, so it gets to spring back past center once more.
+                spring_bounced = False
+                prev_error_sign = 0
 
                 if lost_elapsed < SEARCH_GRACE_S:
                     # Might just be a single dropped frame - hold still briefly
@@ -158,26 +201,30 @@ def main():
                     velocity = 0.0
                     status_text = "No tag detected - holding"
                 else:
-                    # Sweep back and forth in place instead of sitting stopped,
-                    # since a full stop means the car never re-finds the tag
-                    # unless it happens to drift back into frame on its own.
+                    # Step-and-scan: alternate short rotation bursts with a full
+                    # stop, so the detector gets a shot at a sharp, non-blurred
+                    # frame every cycle instead of only ever seeing the tag while
+                    # the car is mid-spin.
+                    searching = True
                     sweep_elapsed = lost_elapsed - SEARCH_GRACE_S
-                    search_direction = 1 if int(sweep_elapsed // SEARCH_SWEEP_S) % 2 == 0 else -1
+                    cycle_pos = sweep_elapsed % (SEARCH_BURST_S + SEARCH_PAUSE_S)
+                    search_phase = "move" if cycle_pos < SEARCH_BURST_S else "pause"
                     speed = 0.0
                     velocity = 0.0
-                    status_text = f"No tag detected - searching ({'right' if search_direction > 0 else 'left'})"
+                    status_text = f"No tag detected - searching (360, {search_phase})"
 
-                    if connected and search_direction != last_search_direction:
-                        # Drive the two sides in opposite directions to rotate in
-                        # place. Only send when the sweep direction actually
-                        # changes - the SEND_THRESHOLD dedup below doesn't apply
-                        # here since it's keyed on straight-line `speed`.
-                        car.movement_move_tank(
-                            speed_left=SEARCH_SPEED * search_direction,
-                            speed_right=-SEARCH_SPEED * search_direction,
-                            blocking=False,
-                        )
-                        last_search_direction = search_direction
+                    if connected and search_phase != last_search_phase:
+                        if search_phase == "move":
+                            # Drive the two sides in opposite directions to
+                            # rotate in place for one short burst.
+                            car.movement_move_tank(
+                                speed_left=SEARCH_SPEED * SEARCH_DIRECTION,
+                                speed_right=-SEARCH_SPEED * SEARCH_DIRECTION,
+                                blocking=False,
+                            )
+                        else:
+                            car.motor_stop(motor=le.MOTOR_BOTH)
+                        last_search_phase = search_phase
 
                 cv2.putText(
                     frame, status_text, (10, 30),
@@ -185,19 +232,33 @@ def main():
                 )
             else:
                 lost_since = None
-                if last_search_direction != 0:
-                    # Coming out of a search sweep - stop the in-place turn
-                    # before handing control back to the straight-line controller.
+                if searching:
+                    # Coming out of a search - make sure the in-place turn is
+                    # stopped before handing control back to the straight-line
+                    # controller (a no-op if we were already in the pause phase).
                     if connected:
                         car.motor_stop(motor=le.MOTOR_BOTH)
-                    last_search_direction = 0
+                    searching = False
+                    last_search_phase = None
                     last_speed = 0.0
 
                 error_px = centroid[0] - frame_center_x
-                if SPRING_LOADED:
+                error_sign = 0 if abs(error_px) < DEADBAND_PX else (1 if error_px > 0 else -1)
+
+                if SPRING_LOADED and not spring_bounced:
                     speed, velocity = spring_controller(error_px, velocity)
+                    # Once the tag has actually crossed to the other side of
+                    # center, the one allowed spring-back has happened - lock
+                    # into the plain controller below so it lands instead of
+                    # springing back and forth repeatedly.
+                    if prev_error_sign != 0 and error_sign != 0 and error_sign != prev_error_sign:
+                        spring_bounced = True
                 else:
                     speed = p_controller(error_px)
+                    velocity = 0.0
+
+                if error_sign != 0:
+                    prev_error_sign = error_sign
 
                 cv2.polylines(frame, [tag_corners.astype(int)], True, (0, 0, 255), 3)
                 cx, cy = int(centroid[0]), int(centroid[1])
@@ -209,7 +270,7 @@ def main():
 
             cv2.line(frame, (int(frame_center_x), 0), (int(frame_center_x), h), (0, 255, 0), 1)
 
-            if connected and last_search_direction == 0 and abs(speed - last_speed) > SEND_THRESHOLD:
+            if connected and not searching and abs(speed - last_speed) > SEND_THRESHOLD:
                 # movement_move() drives both wheels straight forward/backward from a
                 # single signed speed - see AprilTagParking.py for why per-motor
                 # motor_run() calls turn this car instead of driving it straight.
