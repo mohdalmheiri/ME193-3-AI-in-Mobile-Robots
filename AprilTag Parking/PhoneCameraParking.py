@@ -1,6 +1,6 @@
 """Phone-camera AprilTag parking (the "opposite" of AprilTagParking.py).
 
-Here the AprilTag (36h11, id 0, see for17sep.py / apriltag_id0.png) is
+Here the AprilTag (36h11, id 0, see AprilTagGenerator.py / apriltag_id0.png) is
 STATIONARY - taped flat to a wall, monitor, or table - instead of riding on
 the car. An iPhone is mounted on the car facing forward and streams its
 camera feed back to this computer; this script finds the tag in that feed
