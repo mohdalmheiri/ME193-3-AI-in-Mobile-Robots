@@ -64,10 +64,23 @@ and the tag loses tracking — its gains are tuned lower and more conservative.
 
 **What does your code do if no tag is detected?**
 `find_tag_centroid()` returns `None` when `cv2.aruco`'s detector finds no
-markers in the frame. Both scripts treat that as "stop rather than guess a
-direction": speed is forced to `0.0` (and the spring controller's `velocity`
-state is reset to `0.0` too), and the video overlay shows a red
-"No tag detected - stopped" message instead of a centroid/speed readout.
+markers in the frame. Both scripts hold still for a short grace period
+(`SEARCH_GRACE_S`) in case it's just a single dropped frame, then start
+searching instead of sitting stopped indefinitely:
+- `AprilTagParking.py` sweeps back and forth in place (`movement_move_tank()`
+  with opposite left/right speeds), reversing direction every
+  `SEARCH_SWEEP_S` seconds, covering a bounded arc around where the tag was
+  last seen.
+- `PhoneCameraParking.py` does a step-and-scan full 360° search: short
+  rotation bursts (`SEARCH_BURST_S`) alternated with full stops
+  (`SEARCH_PAUSE_S`), so the detector gets a sharp, non-blurred frame each
+  cycle instead of only ever seeing the tag mid-spin. It also uses
+  angle-tolerant `ArUco` detector parameters (`build_detector_params()`) so a
+  tag viewed at a steep angle from the car's own camera still decodes.
+
+Either way, the video overlay shows a red "No tag detected - holding" or
+"...searching" message, and once the tag reappears the search stops and
+control hands back to the straight-line P/spring controller.
 
 **Can you make it overshoot the center spot and come back (spring loaded)?**
 Yes — set `SPRING_LOADED = True`. Instead of the plain P controller with a
