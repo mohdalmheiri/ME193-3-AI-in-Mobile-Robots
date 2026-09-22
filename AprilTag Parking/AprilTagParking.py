@@ -1,6 +1,6 @@
 """AprilTag parking.
 
-Detect an AprilTag (36h11, see for17sep.py) taped to a tower on the car in
+Detect an AprilTag (36h11, see AprilTagGenerator.py) taped to a tower on the car in
 the live webcam feed, and drive the car so the tag centers itself
 horizontally in the frame.
 
