@@ -6,4 +6,3 @@ opencv-python>=5.0.0.93   # AprilTagParking.py, PhoneCameraParking.py — camera
 # to work.
 mediapipe==0.10.35
 certifi>=2026.7.22
-paho-mqtt>=2.1.0          # mqttlib.py — MQTT publish/subscribe
